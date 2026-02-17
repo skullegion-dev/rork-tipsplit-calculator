@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useMemo } from "react";
+import React, { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
   View,
   Text,
@@ -9,14 +9,18 @@ import {
   Platform,
   Animated,
   Keyboard,
+  Share,
+  Alert,
 } from "react-native";
-import { Users, Percent, DollarSign, Receipt } from "lucide-react-native";
+import { Users, Percent, DollarSign, Receipt, Copy, Share2, RotateCcw } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+import * as Clipboard from "expo-clipboard";
 import { useTheme } from "@/hooks/useColorScheme";
 import { useHistory } from "@/contexts/HistoryContext";
+import { useSettings } from "@/contexts/SettingsContext";
 import { Calculation } from "@/types/calculation";
 
-const TIP_PRESETS = [15, 18, 20] as const;
+const TIP_PRESETS = [10, 15, 18, 20, 25] as const;
 
 function triggerHaptic() {
   if (Platform.OS !== "web") {
@@ -33,14 +37,30 @@ function triggerSelectionHaptic() {
 export default function CalculatorScreen() {
   const { colors } = useTheme();
   const { addCalculation } = useHistory();
+  const { settings, formatCurrency, applyRounding } = useSettings();
 
   const [billText, setBillText] = useState<string>("");
-  const [tipPercent, setTipPercent] = useState<number>(18);
+  const [tipPercent, setTipPercent] = useState<number>(settings.defaultTipPercent);
   const [customTip, setCustomTip] = useState<boolean>(false);
-  const [numberOfPeople, setNumberOfPeople] = useState<number>(2);
-  const [taxText, setTaxText] = useState<string>("");
+  const [numberOfPeople, setNumberOfPeople] = useState<number>(settings.defaultPeopleCount);
+  const [taxText, setTaxText] = useState<string>(
+    settings.defaultTaxPercent > 0 ? String(settings.defaultTaxPercent) : ""
+  );
+  const [billFocused, setBillFocused] = useState(false);
 
   const saveAnim = useRef(new Animated.Value(0)).current;
+  const copyAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!TIP_PRESETS.includes(settings.defaultTipPercent as typeof TIP_PRESETS[number])) {
+      setCustomTip(true);
+    }
+    setTipPercent(settings.defaultTipPercent);
+    setNumberOfPeople(settings.defaultPeopleCount);
+    if (settings.defaultTaxPercent > 0) {
+      setTaxText(String(settings.defaultTaxPercent));
+    }
+  }, [settings.defaultTipPercent, settings.defaultPeopleCount, settings.defaultTaxPercent]);
 
   const billAmount = useMemo(() => {
     const val = parseFloat(billText);
@@ -56,15 +76,17 @@ export default function CalculatorScreen() {
     const tipAmount = billAmount * (tipPercent / 100);
     const taxAmount = billAmount * (taxPercent / 100);
     const total = billAmount + tipAmount + taxAmount;
-    const perPerson = numberOfPeople > 0 ? total / numberOfPeople : total;
+    const rawPerPerson = numberOfPeople > 0 ? total / numberOfPeople : total;
+    const perPerson = applyRounding(rawPerPerson);
+    const roundedTotal = perPerson * numberOfPeople;
     return {
       subtotal: billAmount,
       tipAmount,
       taxAmount,
-      total,
+      total: settings.roundingMode !== "none" ? roundedTotal : total,
       perPerson,
     };
-  }, [billAmount, tipPercent, taxPercent, numberOfPeople]);
+  }, [billAmount, tipPercent, taxPercent, numberOfPeople, applyRounding, settings.roundingMode]);
 
   const handleTipPreset = useCallback((percent: number) => {
     triggerHaptic();
@@ -84,8 +106,70 @@ export default function CalculatorScreen() {
 
   const handlePeopleChange = useCallback((delta: number) => {
     triggerHaptic();
-    setNumberOfPeople((prev) => Math.max(1, Math.min(20, prev + delta)));
+    setNumberOfPeople((prev) => Math.max(1, Math.min(99, prev + delta)));
   }, []);
+
+  const handleReset = useCallback(() => {
+    triggerHaptic();
+    setBillText("");
+    setTipPercent(settings.defaultTipPercent);
+    setCustomTip(false);
+    setNumberOfPeople(settings.defaultPeopleCount);
+    setTaxText(settings.defaultTaxPercent > 0 ? String(settings.defaultTaxPercent) : "");
+    Keyboard.dismiss();
+    console.log("[Calculator] Reset to defaults");
+  }, [settings]);
+
+  const buildSummaryText = useCallback(() => {
+    const lines = [
+      `Bill Split Summary`,
+      `──────────────`,
+      `Subtotal: ${formatCurrency(results.subtotal)}`,
+      `Tip (${tipPercent}%): ${formatCurrency(results.tipAmount)}`,
+    ];
+    if (taxPercent > 0) {
+      lines.push(`Tax (${taxPercent}%): ${formatCurrency(results.taxAmount)}`);
+    }
+    lines.push(`Total: ${formatCurrency(results.total)}`);
+    if (numberOfPeople > 1) {
+      lines.push(`──────────────`);
+      lines.push(`Per Person (${numberOfPeople}): ${formatCurrency(results.perPerson)}`);
+    }
+    if (settings.roundingMode !== "none") {
+      lines.push(`(Rounded ${settings.roundingMode === "up" ? "up" : "to nearest"})`);
+    }
+    return lines.join("\n");
+  }, [results, tipPercent, taxPercent, numberOfPeople, formatCurrency, settings.roundingMode]);
+
+  const handleCopy = useCallback(async () => {
+    if (billAmount <= 0) return;
+    triggerHaptic();
+    const text = buildSummaryText();
+    await Clipboard.setStringAsync(text);
+    console.log("[Calculator] Copied to clipboard");
+
+    Animated.sequence([
+      Animated.timing(copyAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(copyAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
+    ]).start();
+  }, [billAmount, buildSummaryText, copyAnim]);
+
+  const handleShare = useCallback(async () => {
+    if (billAmount <= 0) return;
+    triggerHaptic();
+    const text = buildSummaryText();
+    try {
+      if (Platform.OS === "web") {
+        await Clipboard.setStringAsync(text);
+        Alert.alert("Copied!", "Bill summary copied to clipboard.");
+      } else {
+        await Share.share({ message: text, title: "TipSplit Summary" });
+      }
+      console.log("[Calculator] Shared summary");
+    } catch (err) {
+      console.log("[Calculator] Share error:", err);
+    }
+  }, [billAmount, buildSummaryText]);
 
   const handleSave = useCallback(() => {
     if (billAmount <= 0) return;
@@ -108,22 +192,10 @@ export default function CalculatorScreen() {
     console.log("[Calculator] Saved calculation:", calc.id);
 
     Animated.sequence([
-      Animated.timing(saveAnim, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(saveAnim, {
-        toValue: 0,
-        duration: 800,
-        useNativeDriver: true,
-      }),
+      Animated.timing(saveAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(saveAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
     ]).start();
   }, [billAmount, tipPercent, taxPercent, numberOfPeople, results, addCalculation, saveAnim]);
-
-  const formatCurrency = useCallback((amount: number) => {
-    return `$${amount.toFixed(2)}`;
-  }, []);
 
   const styles = useMemo(
     () =>
@@ -142,13 +214,32 @@ export default function CalculatorScreen() {
         section: {
           marginBottom: 24,
         },
+        sectionHeader: {
+          flexDirection: "row" as const,
+          justifyContent: "space-between" as const,
+          alignItems: "center" as const,
+          marginBottom: 10,
+        },
         sectionLabel: {
           fontSize: 13,
           fontWeight: "600" as const,
           color: colors.textSecondary,
           textTransform: "uppercase" as const,
           letterSpacing: 0.8,
-          marginBottom: 10,
+        },
+        resetButton: {
+          flexDirection: "row" as const,
+          alignItems: "center" as const,
+          gap: 4,
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: 8,
+          backgroundColor: colors.surfaceAlt,
+        },
+        resetText: {
+          fontSize: 12,
+          fontWeight: "600" as const,
+          color: colors.textSecondary,
         },
         billInputContainer: {
           flexDirection: "row" as const,
@@ -175,24 +266,26 @@ export default function CalculatorScreen() {
         },
         tipRow: {
           flexDirection: "row" as const,
-          gap: 10,
+          flexWrap: "wrap" as const,
+          gap: 8,
         },
         tipButton: {
-          flex: 1,
-          paddingVertical: 14,
+          paddingVertical: 12,
+          paddingHorizontal: 16,
           borderRadius: 12,
           backgroundColor: colors.surface,
           borderWidth: 1.5,
           borderColor: colors.border,
           alignItems: "center" as const,
           justifyContent: "center" as const,
+          minWidth: 58,
         },
         tipButtonActive: {
           backgroundColor: colors.accent,
           borderColor: colors.accent,
         },
         tipButtonText: {
-          fontSize: 16,
+          fontSize: 15,
           fontWeight: "700" as const,
           color: colors.textSecondary,
         },
@@ -222,21 +315,6 @@ export default function CalculatorScreen() {
           fontSize: 18,
           fontWeight: "800" as const,
           color: colors.accent,
-        },
-        sliderTrack: {
-          height: 6,
-          backgroundColor: colors.inputBg,
-          borderRadius: 3,
-          overflow: "hidden" as const,
-        },
-        sliderFill: {
-          height: "100%" as const,
-          backgroundColor: colors.accent,
-          borderRadius: 3,
-        },
-        sliderTouchable: {
-          height: 40,
-          justifyContent: "center" as const,
         },
         sliderLabels: {
           flexDirection: "row" as const,
@@ -370,6 +448,12 @@ export default function CalculatorScreen() {
           color: colors.text,
           fontWeight: "800" as const,
         },
+        roundingNote: {
+          fontSize: 11,
+          color: colors.textMuted,
+          textAlign: "right" as const,
+          marginTop: 2,
+        },
         perPersonContainer: {
           marginTop: 12,
           backgroundColor: colors.highlightBg,
@@ -396,8 +480,30 @@ export default function CalculatorScreen() {
           color: colors.textSecondary,
           marginTop: 2,
         },
-        saveButton: {
+        actionRow: {
+          flexDirection: "row" as const,
+          gap: 10,
           marginTop: 16,
+        },
+        actionButton: {
+          flex: 1,
+          flexDirection: "row" as const,
+          alignItems: "center" as const,
+          justifyContent: "center" as const,
+          gap: 6,
+          paddingVertical: 14,
+          borderRadius: 12,
+          backgroundColor: colors.surfaceAlt,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        actionButtonText: {
+          fontSize: 14,
+          fontWeight: "600" as const,
+          color: colors.textSecondary,
+        },
+        saveButton: {
+          marginTop: 10,
           backgroundColor: colors.accent,
           borderRadius: 14,
           paddingVertical: 16,
@@ -428,11 +534,23 @@ export default function CalculatorScreen() {
           fontWeight: "700" as const,
           color: "#FFFFFF",
         },
+        copiedBadge: {
+          position: "absolute" as const,
+          top: -8,
+          left: "50%" as const,
+          backgroundColor: colors.accent,
+          borderRadius: 12,
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+        },
+        copiedBadgeText: {
+          fontSize: 11,
+          fontWeight: "700" as const,
+          color: "#FFFFFF",
+        },
       }),
     [colors]
   );
-
-  const [billFocused, setBillFocused] = useState(false);
 
   return (
     <View style={styles.container} testID="calculator-screen">
@@ -443,7 +561,20 @@ export default function CalculatorScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Bill Amount</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionLabel}>Bill Amount</Text>
+            {billAmount > 0 && (
+              <TouchableOpacity
+                style={styles.resetButton}
+                onPress={handleReset}
+                activeOpacity={0.7}
+                testID="reset-button"
+              >
+                <RotateCcw size={12} color={colors.textSecondary} />
+                <Text style={styles.resetText}>Reset</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           <View
             style={[
               styles.billInputContainer,
@@ -472,7 +603,7 @@ export default function CalculatorScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Tip Percentage</Text>
+          <Text style={[styles.sectionLabel, { marginBottom: 10 }]}>Tip Percentage</Text>
           <View style={styles.tipRow}>
             {TIP_PRESETS.map((preset) => (
               <TouchableOpacity
@@ -488,9 +619,7 @@ export default function CalculatorScreen() {
                 <Text
                   style={[
                     styles.tipButtonText,
-                    !customTip &&
-                      tipPercent === preset &&
-                      styles.tipButtonTextActive,
+                    !customTip && tipPercent === preset && styles.tipButtonTextActive,
                   ]}
                 >
                   {preset}%
@@ -537,7 +666,7 @@ export default function CalculatorScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Number of People</Text>
+          <Text style={[styles.sectionLabel, { marginBottom: 10 }]}>Number of People</Text>
           <View style={styles.peopleContainer}>
             <View style={styles.peopleLeft}>
               <Users size={20} color={colors.accent} />
@@ -560,10 +689,10 @@ export default function CalculatorScreen() {
               <TouchableOpacity
                 style={[
                   styles.peopleButton,
-                  numberOfPeople >= 20 && styles.peopleButtonDisabled,
+                  numberOfPeople >= 99 && styles.peopleButtonDisabled,
                 ]}
                 onPress={() => handlePeopleChange(1)}
-                disabled={numberOfPeople >= 20}
+                disabled={numberOfPeople >= 99}
                 activeOpacity={0.7}
                 testID="people-plus"
               >
@@ -574,7 +703,7 @@ export default function CalculatorScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Tax (Optional)</Text>
+          <Text style={[styles.sectionLabel, { marginBottom: 10 }]}>Tax (Optional)</Text>
           <View style={styles.taxInputContainer}>
             <Percent size={18} color={colors.textMuted} />
             <TextInput
@@ -593,7 +722,7 @@ export default function CalculatorScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Results</Text>
+          <Text style={[styles.sectionLabel, { marginBottom: 10 }]}>Results</Text>
           <View style={styles.resultsCard}>
             <View style={styles.resultRow}>
               <Text style={styles.resultLabel}>Subtotal</Text>
@@ -602,18 +731,14 @@ export default function CalculatorScreen() {
               </Text>
             </View>
             <View style={styles.resultRow}>
-              <Text style={styles.resultLabel}>
-                Tip ({tipPercent}%)
-              </Text>
+              <Text style={styles.resultLabel}>Tip ({tipPercent}%)</Text>
               <Text style={styles.resultValue}>
                 {formatCurrency(results.tipAmount)}
               </Text>
             </View>
             {taxPercent > 0 && (
               <View style={styles.resultRow}>
-                <Text style={styles.resultLabel}>
-                  Tax ({taxPercent}%)
-                </Text>
+                <Text style={styles.resultLabel}>Tax ({taxPercent}%)</Text>
                 <Text style={styles.resultValue}>
                   {formatCurrency(results.taxAmount)}
                 </Text>
@@ -626,6 +751,11 @@ export default function CalculatorScreen() {
                 {formatCurrency(results.total)}
               </Text>
             </View>
+            {settings.roundingMode !== "none" && billAmount > 0 && (
+              <Text style={styles.roundingNote}>
+                Rounded {settings.roundingMode === "up" ? "up" : "to nearest dollar"}
+              </Text>
+            )}
 
             <View style={styles.perPersonContainer}>
               <Text style={styles.perPersonLabel}>Per Person</Text>
@@ -635,6 +765,29 @@ export default function CalculatorScreen() {
               <Text style={styles.perPersonSub}>
                 split {numberOfPeople} way{numberOfPeople > 1 ? "s" : ""}
               </Text>
+            </View>
+
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.actionButton, billAmount <= 0 && { opacity: 0.4 }]}
+                onPress={handleCopy}
+                disabled={billAmount <= 0}
+                activeOpacity={0.7}
+                testID="copy-button"
+              >
+                <Copy size={16} color={colors.textSecondary} />
+                <Text style={styles.actionButtonText}>Copy</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, billAmount <= 0 && { opacity: 0.4 }]}
+                onPress={handleShare}
+                disabled={billAmount <= 0}
+                activeOpacity={0.7}
+                testID="share-button"
+              >
+                <Share2 size={16} color={colors.textSecondary} />
+                <Text style={styles.actionButtonText}>Share</Text>
+              </TouchableOpacity>
             </View>
 
             <View>
@@ -674,6 +827,26 @@ export default function CalculatorScreen() {
           </View>
         </View>
       </ScrollView>
+
+      <Animated.View
+        style={[
+          styles.copiedBadge,
+          {
+            opacity: copyAnim,
+            transform: [
+              {
+                translateY: copyAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [20, 0],
+                }),
+              },
+            ],
+          },
+        ]}
+        pointerEvents="none"
+      >
+        <Text style={styles.copiedBadgeText}>Copied!</Text>
+      </Animated.View>
     </View>
   );
 }
@@ -725,10 +898,7 @@ function CustomSlider({
   return (
     <View
       ref={trackRef}
-      style={{
-        height: 40,
-        justifyContent: "center" as const,
-      }}
+      style={{ height: 40, justifyContent: "center" as const }}
       {...responder}
     >
       <View

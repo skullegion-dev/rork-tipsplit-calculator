@@ -5,7 +5,7 @@ import createContextHook from "@nkzw/create-context-hook";
 import { Calculation } from "@/types/calculation";
 
 const HISTORY_KEY = "tipsplit_history";
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 50;
 
 export const [HistoryProvider, useHistory] = createContextHook(() => {
   const [calculations, setCalculations] = useState<Calculation[]>([]);
@@ -48,6 +48,16 @@ export const [HistoryProvider, useHistory] = createContextHook(() => {
     [calculations, mutate]
   );
 
+  const removeCalculation = useCallback(
+    (id: string) => {
+      const updated = calculations.filter((c) => c.id !== id);
+      setCalculations(updated);
+      mutate(updated);
+      console.log("[HistoryContext] Removed calculation:", id);
+    },
+    [calculations, mutate]
+  );
+
   const clearHistory = useCallback(() => {
     setCalculations([]);
     mutate([]);
@@ -56,6 +66,7 @@ export const [HistoryProvider, useHistory] = createContextHook(() => {
   return {
     calculations,
     addCalculation,
+    removeCalculation,
     clearHistory,
     isLoading: historyQuery.isLoading,
   };
