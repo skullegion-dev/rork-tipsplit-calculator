@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
-  Linking,
   Platform,
 } from "react-native";
 import {
@@ -24,8 +23,11 @@ import {
   Star,
   MessageSquare,
   Heart,
+  ExternalLink,
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+import * as StoreReview from "expo-store-review";
+import { openURL } from "expo-linking";
 import { useTheme } from "@/hooks/useColorScheme";
 import { useSettings, RoundingMode, CurrencySymbol } from "@/contexts/SettingsContext";
 
@@ -74,20 +76,38 @@ export default function SettingsScreen() {
     );
   }, [resetSettings]);
 
-  const handleRateApp = useCallback(() => {
+  const handleRateApp = useCallback(async () => {
     triggerHaptic();
-    if (Platform.OS === "ios") {
-      Linking.openURL("https://apps.apple.com/app/id0000000000?action=write-review");
-    } else if (Platform.OS === "android") {
-      Linking.openURL("https://play.google.com/store/apps/details?id=com.tipsplit.app");
-    } else {
+    if (Platform.OS === "web") {
       Alert.alert("Thank you!", "We appreciate your support.");
+      return;
+    }
+    try {
+      const isAvailable = await StoreReview.isAvailableAsync();
+      if (isAvailable) {
+        await StoreReview.requestReview();
+        console.log("[Settings] Store review requested");
+      } else {
+        Alert.alert("Thank you!", "We appreciate your support.");
+      }
+    } catch (err) {
+      console.log("[Settings] Store review error:", err);
+      Alert.alert("Thank you!", "We appreciate your support.");
+    }
+  }, []);
+
+  const handlePrivacyPolicy = useCallback(() => {
+    triggerHaptic();
+    if (Platform.OS === "web") {
+      window.open("https://rork.app/pa/cz611yqugtxr7rxndz4bx/privacy", "_blank");
+    } else {
+      openURL("https://rork.app/pa/cz611yqugtxr7rxndz4bx/privacy");
     }
   }, []);
 
   const handleFeedback = useCallback(() => {
     triggerHaptic();
-    Linking.openURL("mailto:support@tipsplit.app?subject=TipSplit%20Feedback");
+    openURL("mailto:feedback@tipsplit.app?subject=TipSplit%20App%20Feedback");
   }, []);
 
   const styles = useMemo(
@@ -514,6 +534,29 @@ export default function SettingsScreen() {
                 </View>
               </View>
               <ChevronRight size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Legal</Text>
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.linkRow}
+              onPress={handlePrivacyPolicy}
+              activeOpacity={0.7}
+              testID="privacy-policy"
+            >
+              <View style={styles.linkLeft}>
+                <View style={[styles.linkIconBg, { backgroundColor: "#E8F5E9" }]}>
+                  <Shield size={18} color="#4CAF50" />
+                </View>
+                <View>
+                  <Text style={styles.linkText}>Privacy Policy</Text>
+                  <Text style={styles.linkSubtext}>How we handle your data</Text>
+                </View>
+              </View>
+              <ExternalLink size={16} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
         </View>
